@@ -9,9 +9,9 @@
 
 | 状態 | 内容 |
 |------|------|
-| ✅ 実装済み | VIR データモデル、VQL パーサ（再帰下降）、VQL 実行器、証拠フレーム返却、HTML インタラクティブデモ |
-| 🔧 デモ版 | VIR 生成は合成データ（固定 seed の Python ジェネレータ）。実際の YOLO / ByteTrack とは未接続 |
-| 🚧 今後実装 | YOLO-World + ByteTrack からの実 VIR コンパイル、Re-ID 統合、クラウド VIR ストレージ |
+| ✅ 実装済み | VIR データモデル、VQL パーサ（再帰下降）、VQL 実行器、証拠フレーム返却、HTML インタラクティブデモ、**YOLO ベース VIR コンパイラ**（実映像対応） |
+| 🔧 デモ版 | 合成監視データ（固定 seed）で動く主デモ。実映像 VIR は YOLOv8n で確認済み（下記参照） |
+| 🚧 今後実装 | ByteTrack Re-ID 統合、YOLO-World テキストプロンプト検出、クラウド VIR ストレージ |
 
 ---
 
@@ -41,8 +41,12 @@
 
 ```bash
 pip install pillow
-python demo_vql.py --no-server      # VIR 生成 + 3クエリ実行 + 決定論証明
+python demo_vql.py --no-server      # 合成 VIR + 3クエリ実行 + 決定論証明
 python -m pytest tests/ -v          # ユニットテスト 32件
+
+# 実映像 VIR コンパイル (要 ultralytics + opencv-python)
+pip install ultralytics opencv-python
+python compile_real_vir.py <video.mp4> --out vql_real_vir.json
 ```
 
 ブラウザデモ: `vql_mitou2026.html` を直接開く（外部依存なし）
@@ -102,6 +106,52 @@ Step 3 ▶ Determinism verification
 ```
 
 完全な実行ログ: [`vql_demo_log.txt`](vql_demo_log.txt)
+
+---
+
+## 実映像 VIR コンパイル例（製造ライン）
+
+> **実動画 + 実 YOLO 検出** — 合成データではない
+
+```
+Step 1 ▶ Compile real video → VIR
+  Input   : brake_pads_trainee_1/2.mp4 + brake_pads_gold.mp4
+  Pipeline: YOLOv8n → centroid tracking → zone analysis
+  Classes : sports ball (class 32)
+            ※ ブレーキパッド部品が 'sports ball' として検出される
+              これは知覚層の限界 — クエリ層は影響を受けない
+
+  VIR summary:
+    source      : brake_pads_manufacturing.mp4
+    duration    : 92.0s (3 sessions)
+    zones       : 左作業エリア, 中央作業台, 右作業エリア
+    tracks      : 3
+    zone_events : 6
+    stay_facts  : 3
+
+  Done (13.6s) → vql_real_vir.json
+
+Step 2 ▶ VQL クエリ実行  [NO models -- deterministic]
+
+  Query 1: 右作業エリアで3秒以上検出された部品 (SOP 適合確認)
+  ┌──────────────────────────────────────────────────────────┐
+  │ SELECT   part                                            │
+  │ FROM     VIR("brake_pads_manufacturing.mp4")             │
+  │ WHERE    STAYS(part, zone("右作業エリア")) > 3s           │
+  │ RETURN   track_id, duration, evidence_frames(n=1)        │
+  └──────────────────────────────────────────────────────────┘
+  -> 3 match(es)   exec: 0.13ms [deterministic OK]
+  [track_0000]  enter_t=0.50s   exit_t=3.96s   dur=3.5s
+  [track_0001]  enter_t=28.50s  exit_t=31.96s  dur=3.5s
+  [track_0002]  enter_t=60.50s  exit_t=63.96s  dur=3.5s
+
+  Query 2: 2秒未満しか検出されなかった部品 (異常検知)
+  -> 0 match(es)   exec: 0.05ms  (全部品が SOP 基準を満たす)
+```
+
+実映像デモログ: [`vql_real_demo_log.txt`](vql_real_demo_log.txt)
+実映像 VIR: [`vql_real_vir.json`](vql_real_vir.json)
+コンパイラ: `python compile_real_vir.py <video.mp4> --out vql_real_vir.json`
 
 ---
 
