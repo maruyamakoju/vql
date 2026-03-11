@@ -1,0 +1,119 @@
+
+ ╔══════════════════════════════════════════════════════╗
+ ║   VQL — Video Query Language                         ║
+ ║   映像のSQL: compile once, query deterministically   ║
+ ║   Mitou IT 2026 Application Demo                     ║
+ ╚══════════════════════════════════════════════════════╝
+
+
+────────────────────────────────────────────────────────────────
+  Step 1  ▶  Compile surveillance video → VIR
+────────────────────────────────────────────────────────────────
+  Generating synthetic surveillance video → vql_demo_surveillance.mp4 ... done  (791ms)
+  Compiling VIR from perception pipeline ... done  (203ms)
+
+  VIR summary:
+    source       : entrance_cam_2h.mp4
+    duration     : 2h 00m 00s  (7200s)
+    fps          : 15.0
+    zones        : 4  ->  ['A区域', 'B区域', '受付', 'エレベーター前']
+    entities     : 347
+    tracks       : 347
+    zone_events  : 700
+    stay_facts   : 350
+
+────────────────────────────────────────────────────────────────
+  Step 2  ▶  Execute VQL queries  [NO models -- deterministic]
+────────────────────────────────────────────────────────────────
+
+  +-- Query 1: 14時以降にA区域へ入り5分未満で退出した人物を全件抽出
+  |  SELECT   person
+  |  FROM     VIR("entrance_cam_2h.mp4")
+  |  WHERE    ENTERS(person, zone("A区域"),
+  |                  time_range(from="14:00:00", to="15:00:00"))
+  |    AND    DURATION(person, zone("A区域")) < 5min
+  |  RETURN   track_id, enter_t, exit_t, duration,
+  |           evidence_frames(n=2)
+  |
+  |  -> 4 match(es)   exec: 0.41ms (run 1)  /  0.23ms (run 2)  [deterministic OK]
+  |
+  |  Execution plan:
+  |    VIR_SCAN  347 tracks loaded from 'entrance_cam_2h.mp4'
+  |    ENTERS zone='A区域' from=14:00:00.00 to=15:00:00.00  → 4 candidates
+  |    DURATION zone='A区域' < 5min  → 4 candidates
+  |    RETURN  4 result(s)  total_time=0.41ms
+  |
+  |  [1] track_047  type=person  14:02:11.00 -> 14:04:33.00  dur=2m 22s  conf=0.98
+  |      predicates: DURATION(zone('A区域')) < 5min
+  |  [2] track_083  type=person  14:08:45.00 -> 14:11:20.00  dur=2m 35s  conf=0.98
+  |      predicates: DURATION(zone('A区域')) < 5min
+  |  [3] track_126  type=person  14:23:07.00 -> 14:26:52.00  dur=3m 45s  conf=0.98
+  |      predicates: DURATION(zone('A区域')) < 5min
+  |  [4] track_194  type=person  14:51:33.00 -> 14:54:18.00  dur=2m 45s  conf=0.98
+  |      predicates: DURATION(zone('A区域')) < 5min
+  +--
+
+  +-- Query 2: 受付を経由してA区域に入った人物のシーケンス検出
+  |  SELECT   person
+  |  FROM     VIR("entrance_cam_2h.mp4")
+  |  WHERE    SEQUENCE(
+  |             ENTERS(person, zone("受付")),
+  |             ENTERS(person, zone("A区域"))
+  |           )
+  |    AND    DURATION(person, zone("受付")) < 3min
+  |  RETURN   track_id, sequence_events, evidence_frames(n=2)
+  |
+  |  -> 3 match(es)   exec: 0.59ms (run 1)  /  0.42ms (run 2)  [deterministic OK]
+  |
+  |  Execution plan:
+  |    VIR_SCAN  347 tracks loaded from 'entrance_cam_2h.mp4'
+  |    SEQUENCE(2 steps)  → 3 candidates
+  |    DURATION zone='受付' < 3min  → 3 candidates
+  |    RETURN  3 result(s)  total_time=0.59ms
+  |
+  |  [1] track_021  type=person  09:14:05.00 -> 09:16:08.00  dur=2m 03s  conf=0.98
+  |      predicates: DURATION(zone('受付')) < 3min
+  |  [2] track_155  type=person  10:42:08.00 -> 10:44:00.00  dur=1m 52s  conf=0.98
+  |      predicates: DURATION(zone('受付')) < 3min
+  |  [3] track_267  type=person  11:31:30.00 -> 11:33:00.00  dur=1m 30s  conf=0.98
+  |      predicates: DURATION(zone('受付')) < 3min
+  +--
+
+  +-- Query 3: 13〜18時にB区域で30分以上滞留した人物の検出
+  |  SELECT   person
+  |  FROM     VIR("entrance_cam_2h.mp4")
+  |  WHERE    STAYS(person, zone("B区域")) > 30min
+  |    AND    TIME_OF_DAY(person) IN time_range("13:00:00", "18:00:00")
+  |  RETURN   track_id, total_stay_duration, evidence_frames(n=2)
+  |
+  |  -> 2 match(es)   exec: 0.31ms (run 1)  /  0.21ms (run 2)  [deterministic OK]
+  |
+  |  Execution plan:
+  |    VIR_SCAN  347 tracks loaded from 'entrance_cam_2h.mp4'
+  |    DURATION zone='B区域' > 30min  → 39 candidates
+  |    TIME_OF_DAY in [13:00:00.00, 18:00:00.00]  → 2 candidates
+  |    RETURN  2 result(s)  total_time=0.31ms
+  |
+  |  [1] track_231  type=person  13:05:22.00 -> 14:47:38.00  dur=1h 42m 16s  conf=0.98
+  |      predicates: STAYS(zone('B区域')) > 30min
+  |  [2] track_312  type=person  15:22:04.00 -> 16:01:44.00  dur=39m 40s  conf=0.98
+  |      predicates: STAYS(zone('B区域')) > 30min
+  +--
+
+────────────────────────────────────────────────────────────────
+  Step 3  ▶  Determinism verification
+────────────────────────────────────────────────────────────────
+
+  Running Query 1 a third time ...
+  All three runs returned identical result sets:
+    - track_047
+    - track_083
+    - track_126
+    - track_194
+
+  [OK] VQL is 100% deterministic.
+       Perception error is confined to the VIR compilation layer,
+       not the query layer.
+
+  Done. Open vql_mitou2026.html in any browser for the interactive demo.
+
