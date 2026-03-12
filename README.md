@@ -109,44 +109,65 @@ Step 3 ▶ Determinism verification
 
 ---
 
-## 実映像 VIR コンパイル例（製造ライン）
+## 実映像 VIR コンパイル例（ドローン監視映像）
 
 > **実動画 + 実 YOLO 検出** — 合成データではない
+> ドローン空撮映像 125s → YOLOv8n 人物検出 → VIR → VQL クエリ
 
 ```
 Step 1 ▶ Compile real video → VIR
-  Input   : brake_pads_trainee_1/2.mp4 + brake_pads_gold.mp4
+  Input   : ドローン.webm  (125s, 640×360, 30fps)
   Pipeline: YOLOv8n → centroid tracking → zone analysis
-  Classes : sports ball (class 32)
-            ※ ブレーキパッド部品が 'sports ball' として検出される
-              これは知覚層の限界 — クエリ層は影響を受けない
+  Classes : person (class 0)  conf_thresh=0.20
 
   VIR summary:
-    source      : brake_pads_manufacturing.mp4
-    duration    : 92.0s (3 sessions)
-    zones       : 左作業エリア, 中央作業台, 右作業エリア
-    tracks      : 3
-    zone_events : 6
-    stay_facts  : 3
+    source      : drone_surveillance.webm
+    duration    : 124.9s  (10.0 eff.fps after 3x sampling)
+    entities    : 103  (person)
+    tracks      : 103
+    zone_events : 138
+    stay_facts  : 126
+    zones       : 北エリア / 左エリア / 中央エリア / 右エリア / 南エリア
 
-  Done (13.6s) → vql_real_vir.json
+  Done (37.6s) → vql_real_vir.json
 
-Step 2 ▶ VQL クエリ実行  [NO models -- deterministic]
+Step 2 ▶ VQL クエリ実行  [NO models — deterministic]
 
-  Query 1: 右作業エリアで3秒以上検出された部品 (SOP 適合確認)
+  Query 1: 南エリアで2秒以上滞留した人物（不審滞留検知）
   ┌──────────────────────────────────────────────────────────┐
-  │ SELECT   part                                            │
-  │ FROM     VIR("brake_pads_manufacturing.mp4")             │
-  │ WHERE    STAYS(part, zone("右作業エリア")) > 3s           │
+  │ SELECT   p                                               │
+  │ FROM     VIR("drone_surveillance.webm")                  │
+  │ WHERE    STAYS(p, zone("南エリア")) > 2s                  │
   │ RETURN   track_id, duration, evidence_frames(n=1)        │
   └──────────────────────────────────────────────────────────┘
-  -> 3 match(es)   exec: 0.13ms [deterministic OK]
-  [track_0000]  enter_t=0.50s   exit_t=3.96s   dur=3.5s
-  [track_0001]  enter_t=28.50s  exit_t=31.96s  dur=3.5s
-  [track_0002]  enter_t=60.50s  exit_t=63.96s  dur=3.5s
+  -> 1 match(es)   exec: 0.18ms [deterministic OK]
+  [track_0069]  enter_t=89.20s  exit_t=92.70s  dur=3.5s
 
-  Query 2: 2秒未満しか検出されなかった部品 (異常検知)
-  -> 0 match(es)   exec: 0.05ms  (全部品が SOP 基準を満たす)
+  Query 2: 南→中央エリアへ移動した人物（シーケンス検出）
+  ┌──────────────────────────────────────────────────────────┐
+  │ SELECT   p                                               │
+  │ FROM     VIR("drone_surveillance.webm")                  │
+  │ WHERE    SEQUENCE(                                       │
+  │            ENTERS(p, zone("南エリア")),                   │
+  │            ENTERS(p, zone("中央エリア"))                  │
+  │          )                                               │
+  │ RETURN   track_id, sequence_events                       │
+  └──────────────────────────────────────────────────────────┘
+  -> 3 match(es)   exec: 0.21ms [deterministic OK]
+  [track_0069]  南エリア@89.2s → 中央エリア@92.2s → 右エリア@93.4s → 北エリア@93.9s
+  [track_0060]  左エリア@88.5s → 南エリア@88.5s → 中央エリア@89.0s
+  [track_0017]  中央エリア@28.4s  (同時 ENTER)
+
+  Query 3: 北エリアで1秒以上滞留した人物
+  -> 1 match(es)   exec: 0.10ms [deterministic OK]
+  [track_0031]  enter_t=69.50s  exit_t=72.10s  dur=2.6s
+
+Step 3 ▶ 決定論の証明
+  Query 1 を3回実行:
+    実行1: ['track_0069']
+    実行2: ['track_0069']
+    実行3: ['track_0069']
+  [OK] VQL is 100% deterministic (real video + real YOLO detections)
 ```
 
 実映像デモログ: [`vql_real_demo_log.txt`](vql_real_demo_log.txt)
@@ -167,6 +188,22 @@ $ python -m pytest tests/ -v
 | TestParser | 16 | トークナイザ・パーサ（ENTERS/STAYS/SEQUENCE/TIME_OF_DAY など） |
 | TestExecutor | 13 | 実行器（フィルタ・型絞り込み・決定論 100回・10ms以内） |
 | TestVIRSerialisation | 3 | VIR → dict/JSON → VIR ラウンドトリップ |
+
+---
+
+## 主デモ（demo_vql.py）について
+
+`demo_vql.py` が返す `track_047` などのトラック ID は **合成データ**（`vql/demo_data.py` の固定 seed ジェネレータ）から来ています。
+`vql_demo_surveillance.mp4` も OpenCV で生成した合成映像です。
+
+| コンポーネント | 状態 | 備考 |
+|-------------|------|------|
+| VQL パーサ・実行器 | ✅ 実装 | 任意の VIR に対して動作 |
+| VIR コンパイラ | ✅ 実装 | 実映像 → VIR（上記ドローン例） |
+| 主デモの VIR | 🔧 合成 | 固定 seed の Python ジェネレータ。YOLO/ByteTrack 未接続 |
+| evidence_frames | 🔧 合成フォールバック | 動画がなければ PIL で描画したモックフレームを返す |
+
+つまり **「問い合わせ層は本物、知覚層は未踏で繋げる」** というプロジェクトです。
 
 ---
 

@@ -1,71 +1,69 @@
 ==============================================================
-VQL Real Video Demo — 製造ライン映像 → VIR コンパイル + クエリ
+VQL Real Video Demo — ドローン映像 → VIR コンパイル + クエリ
 ==============================================================
 
 Step 1 ▶ Compile real video → VIR
-  Input   : brake_pads_trainee_1/2.mp4 + brake_pads_gold.mp4
-  Pipeline: YOLO-World (yolov8n) → centroid tracking → zone analysis
-  Classes : sports ball (YOLO class 32)
-            ※ ブレーキパッド部品がYOLOに'sports ball'として誤分類される
-              これは知覚層の限界 — クエリ層は影響を受けない
+  Input   : ドローン.webm  (125s, 640×360, 30fps)
+  Pipeline: YOLOv8n  →  centroid tracking  →  zone analysis
+  Classes : person (class 0)  conf_thresh=0.20
+  Zones   :
+    北エリア  [[0.00,0.00]→[1.00,0.28]]  (北側)
+    左エリア  [[0.00,0.25]→[0.35,0.75]]  (西側)
+    中央エリア [[0.32,0.28]→[0.68,0.75]]  (中央)
+    右エリア  [[0.65,0.25]→[1.00,0.75]]  (東側)
+    南エリア  [[0.00,0.70]→[1.00,1.00]]  (南側)
 
-  Compiling brake_pads_trainee_1.mp4 (672 frames, 28.0s, 640×480) ...
-    detections: 84 frames  conf_mean=0.58  class=sports_ball
-    tracking  : 1 track (track_0000)
-    zone_event: ENTER 右作業エリア t=0.50s
-    zone_event: EXIT  右作業エリア t=3.96s
-
-  Compiling brake_pads_trainee_2.mp4 (768 frames, 32.0s, 640×480) ...
-    detections: 84 frames  conf_mean=0.58  class=sports_ball
-    tracking  : 1 track (track_0001)
-    zone_event: ENTER 右作業エリア t=28.50s
-    zone_event: EXIT  右作業エリア t=31.96s
-
-  Compiling brake_pads_gold.mp4 (768 frames, 32.0s, 640×480) ...
-    detections: 84 frames  conf_mean=0.58  class=sports_ball
-    tracking  : 1 track (track_0002)
-    zone_event: ENTER 右作業エリア t=60.50s
-    zone_event: EXIT  右作業エリア t=63.96s
+  Compiling ドローン.webm  (3748 frames) ...
+  Done (37.6s) → vql_real_vir.json
 
   VIR summary:
-    source      : brake_pads_manufacturing.mp4
-    duration    : 92.0s (3セッション合計)
-    zones       : 左作業エリア, 中央作業台, 右作業エリア
-    tracks      : 3  (trainee_1, trainee_2, gold_standard)
-    zone_events : 6
-    stay_facts  : 3
-
-  Done (13.6s) → vql_real_vir.json (real YOLO detections, real video)
+    source      : drone_surveillance.webm
+    duration    : 124.9s  (10.0 eff.fps after 3x sampling)
+    resolution  : 640×360
+    entities    : 103  (person)
+    tracks      : 103
+    zone_events : 138
+    stay_facts  : 126
 
 ==============================================================
-Step 2 ▶ VQL クエリ実行  [モデル不使用 — 決定論的]
+Step 2 ▶ VQL クエリ実行  [NO models — deterministic]
 ==============================================================
 
-  Query 1: 右作業エリアで3秒以上検出された部品 (SOP適合確認)
+  Query 1: 南エリアで2秒以上滞留した人物（不審滞留検知）
   ┌──────────────────────────────────────────────────────────┐
-  │ SELECT   part                                            │
-  │ FROM     VIR("brake_pads_manufacturing.mp4")             │
-  │ WHERE    STAYS(part, zone("右作業エリア")) > 3s           │
+  │ SELECT   p                                               │
+  │ FROM     VIR("drone_surveillance.webm")                  │
+  │ WHERE    STAYS(p, zone("南エリア")) > 2s                  │
   │ RETURN   track_id, duration, evidence_frames(n=1)        │
   └──────────────────────────────────────────────────────────┘
-  -> 3 match(es)   exec: 0.13ms [deterministic OK]
-  [track_0000]  enter_t=0.50s  exit_t=3.96s  dur=3.5s
-  [track_0001]  enter_t=28.50s  exit_t=31.96s  dur=3.5s
-  [track_0002]  enter_t=60.50s  exit_t=63.96s  dur=3.5s
+  -> 1 match(es)   exec: 0.18ms [deterministic OK]
+  [track_0069]  enter_t=89.20s  exit_t=92.70s  dur=3.5s
 
-  Query 2: 右作業エリアへの入室を記録した全部品
-  -> 3 match(es)   exec: 0.07ms [deterministic OK]
+  Query 2: 南→中央エリアへ移動した人物（シーケンス検出）
+  ┌──────────────────────────────────────────────────────────┐
+  │ SELECT   p                                               │
+  │ FROM     VIR("drone_surveillance.webm")                  │
+  │ WHERE    SEQUENCE(                                       │
+  │            ENTERS(p, zone("南エリア")),                   │
+  │            ENTERS(p, zone("中央エリア"))                  │
+  │          )                                               │
+  │ RETURN   track_id, sequence_events                       │
+  └──────────────────────────────────────────────────────────┘
+  -> 3 match(es)   exec: 0.21ms [deterministic OK]
+  [track_0017]  ENTER:中央エリア@28.4s  ENTER:南エリア@28.4s
+  [track_0060]  ENTER:左エリア@88.5s  ENTER:南エリア@88.5s  ENTER:中央エリア@89.0s
+  [track_0069]  ENTER:南エリア@89.2s  ENTER:中央エリア@92.2s  ENTER:右エリア@93.4s  ENTER:北エリア@93.9s  ENTER:北エリア@94.1s
 
-  Query 3: 2秒未満しか検出されなかった部品 (異常検知)
-  -> 0 match(es)   exec: 0.05ms [deterministic OK]
-  (全部品がSOP基準 >3s を満たすため異常なし)
+  Query 3: 北エリアで1秒以上滞留した人物
+  -> 1 match(es)   exec: 0.10ms [deterministic OK]
+  [track_0031]  enter_t=69.50s  exit_t=72.10s  dur=2.6s
 
 ==============================================================
 Step 3 ▶ 決定論の証明
 ==============================================================
 
-  Query 1を3回実行 → 全て同一結果:
-    実行1: ['track_0000', 'track_0001', 'track_0002']
-    実行2: ['track_0000', 'track_0001', 'track_0002']
-    実行3: ['track_0000', 'track_0001', 'track_0002']
-  [OK] VQL is 100% deterministic (real VIR + real detections)
+  Query 1 を3回実行 → 全て同一結果:
+    実行1: ['track_0069']
+    実行2: ['track_0069']
+    実行3: ['track_0069']
+  [OK] VQL is 100% deterministic (real video + real YOLO detections)
